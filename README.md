@@ -102,6 +102,3 @@ Running `main.m` should produce:
 * Design sweep figures
 * Comparison plots
 
----
-
-If you want, I can also generate a **ROADMAP.md** (what to implement first, second, etc.).
