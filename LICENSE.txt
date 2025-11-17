@@ -1,0 +1,7 @@
+Copyright (c) 2025
+All rights reserved.
+
+This repository is part of a university coursework project.
+No permission is granted to copy, modify, merge, publish, distribute, sublicense, or sell copies of this work, in whole or in part, without explicit written permission from the authors.
+
+Limited educational reuse requests may be considered; please open an issue.
