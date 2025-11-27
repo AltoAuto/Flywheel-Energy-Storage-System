@@ -1,0 +1,60 @@
+# ===========================
+# MATLAB / Simulink Gitignore
+# ===========================
+
+# --- Keep only .m and .p (everything else ignored below) ---
+
+# Autosave / backup files
+*.asv
+*.m~ 
+*.bak
+*.backup
+
+# Data files (ignore unless you explicitly want)
+*.mat
+*.fig
+*.csv
+*.xlsx
+
+# Compiled files / binaries
+*.mex*
+*.dll
+*.so
+*.lib
+*.exe
+
+# Simulink / Code Generation junk
+slprj/
+sccprj/
+codegen/
+*_ert_rtw/
+*_slrt_rtw/
+*_coder_rtw/
+simulink_cache/
+simulink_work/
+
+# MATLAB project files (optional)
+*.mlproj
+*.prj
+
+# History, preferences, autosaves
+*.autosave
+*.mlhistory
+.matlab/
+*.mldr
+
+# Temporary files
+*.tmp
+*.temp
+*.cache
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# General resource directories (images, models, unused things)
+resources/
+assets/
+images/
+figures/
