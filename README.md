@@ -1,104 +1,110 @@
-# **Project 3: Flywheel Energy Storage System**
+# **Flywheel Energy Storage System – MATLAB Model**
 
-This repository contains all MATLAB code needed to:
+### *Project 3 – ME 4053 (Fall 2025)*
 
-1. Evaluate the **baseline flywheel system**
-2. Run the **storage cycle simulation**
-3. Compute **losses, temperature, SOC, inertia**
-4. Build and simulate **AMB plant + controller**
-5. Perform **design sweeps** (magnet thickness, max speed)
-6. Compare **baseline vs optimal design**
-
-Everything is modular and each folder has one job.
+Modular simulation environment for analyzing the electromagnetic flywheel storage system, including rotor physics, thermal behavior, cycle efficiency, and magnetic bearing dynamics.
 
 ---
 
-# **Folder Structure**
+## Folder Structure Overview
 
 ```
 project3/
-│   main.m
+│
+├── main.m
+│
+├── utils/
+│   ├── params.m
+│   └── (misc utilities)
 │
 ├── flywheel/
-│   compute_inertia.m          % mass, inertia, tip-speed checks
-│   compute_soc.m              % SOC omega mapping
-│   compute_losses.m           % wraps rotorLosses, statorLosses, shear
-│   compute_temperature.m      % thermal ODE model
+│   ├── compute_geometry.m
+│   ├── compute_inertia.m
+│   ├── compute_temperature.m
+│   ├── compute_losses.m
+│   ├── compute_soc.m
+│   ├── calcRatedTorque.m
+│   └── (flywheel-specific helpers)
 │
 ├── storage/
-│   load_cycle.m               % loads baseline/new cycle
-│   simulate_cycle.m           % runs the cycle: ω(t), SOC(t), T(t), efficiency
+│   ├── load_cycle.m
+│   ├── simulate_cycle.m
+│   ├── deliverable1a.m
+│   ├── deliverable1b.m
+│   └── (design sweep files added later)
 │
-├── amb/
-│   build_amb_tf.m             % builds AMB plant model (TF or SS)
-│   simulate_step.m            % step disturbance response
-│   compute_dynamic_stiffness.m% Kdyn(freq)
-│   compute_runout.m           % imbalance → orbit/runout vs SOC
-│
-└── utils/
-    params.m                   % all physical parameters + design settings
-    plots.m                    % plotting helpers
+└── amb/
+    ├── amb_ode.m
+    ├── simulate_step.m
+    ├── compute_dynamic_stiffness.m
+    ├── compute_runout.m
+    └── (controller design added later)
 ```
 
----
 
-# **Purpose of Each Folder**
 
-### **flywheel/**
+## What Each Folder Does
 
-Physics of the rotating group.
+### **`utils/` — Global Parameters & Helpers**
 
-* Inertia + mass
-* SOC formula
-* Loss calculations
-* Thermal model (steady-state or dynamic)
+Contains project-wide constants and simple utility functions.
 
-### **storage/**
-
-Time-domain power cycling.
-
-* Loads cycle data
-* Integrates rotational dynamics
-* Computes efficiency + self-discharge recovery
-
-### **amb/**
-
-Active Magnetic Bearing modeling.
-
-* Build plant
-* Apply controller
-* Step disturbance
-* Dynamic stiffness
-* Runout simulation
-
-### **utils/**
-
-Shared utilities.
-
-* All parameters in one place
-* Plot formatting
+* **params.m** – Loads all baseline values from Table 1 & Appendix A
+  (densities, clearances, emissivities, max speed, temp limits, etc.)
+* Small shared helper functions go here.
 
 ---
 
-# **How to Use**
+### **`flywheel/` — Rotor Physics**
 
-1. Edit **utils/params.m** to set baseline or design parameters.
-2. Run **main.m**.
-3. All figures and results will be generated automatically.
+Implements all physical models for the rotor, magnets, shaft, losses, and thermal radiation.
+
+* **compute_geometry.m**
+  Build full rotor + motor + housing geometry (areas, radii, lengths, view factor).
+* **compute_inertia.m**
+  Compute masses + polar inertia of flywheel, shaft, magnets.
+* **compute_temperature.m**
+  Radiative thermal model (gray-body rotor–housing heat transfer).
+* **compute_losses.m**
+  Wrapper for EE `.p` functions → rotorLosses & statorLosses.
+* **compute_soc.m**
+  Convert between state-of-charge and rotational speed.
+* **calcRatedTorque.m**
+  Rated torque from magnetic shear (I_pu = 1.0).
 
 ---
 
-# **Output**
+### **`storage/` — Storage Cycle Simulation**
 
-Running `main.m` should produce:
+Implements all time-dependent system behavior (ω(t), SoC(t), efficiency).
 
-* Losses vs SOC
-* Temperature vs SOC
-* Specific energy & specific power
-* Storage-cycle efficiency
-* AMB step response
-* Dynamic stiffness
-* Runout vs SOC
-* Design sweep figures
-* Comparison plots
+* **load_cycle.m**
+  Loads baseline or team-specific power command profile.
+* **simulate_cycle.m**
+  Integrates rotor ODE with real losses, torque limits, and SoC mapping.
+* **deliverable1a.m**
+  Losses + rotor temperature vs State of Charge.
+* **deliverable1b.m**
+  Specific energy and specific power of baseline design.
+
+---
+
+### **`amb/` — Active Magnetic Bearing Model**
+
+Implements dynamics and control of the radial magnetic bearings.
+
+* **amb_ode.m**
+  Full cascaded current + position loop dynamics (Appendix B structure).
+* **simulate_step.m**
+  Step disturbance response at 0% and 100% SoC.
+* **compute_dynamic_stiffness.m**
+  Closed-loop stiffness vs excitation frequency.
+* **compute_runout.m**
+  Rotor orbit amplitude vs SoC for mass imbalance.
+
+---
+
+## ** `main.m` — Project Driver**
+
+Runs the overall workflow
 
