@@ -104,7 +104,7 @@ Implements dynamics and control of the radial magnetic bearings.
 
 ---
 
-## ** `main.m` — Project Driver**
+##  `main.m` — Project Driver
 
 Runs the overall workflow
 
