@@ -56,5 +56,4 @@ function T_rotor = compute_temperature(p, geom, P_rotor_W)
     T_r4 = max(T_r4, 0);
 
     % Final rotor temperature
-    T_rotor = T_r4 .^ 0.25;    
 end
