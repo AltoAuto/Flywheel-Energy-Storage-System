@@ -28,10 +28,9 @@ function [P_total, P_rotor, P_stator, tau_loss, shear_stress] = ...
 
     % ---- Unpack key geometry for EE functions ----
     mag_thickness = p.magnet_thickness_m;              % [m]
-    D_rotor       = geom.rotor_diameter_for_EE_m;      % [m]
+    D_rotor       = geom.D_shaft;      % [m]
     L_ax          = geom.rotor_axial_length_for_EE_m;  % [m]
     omega_rpm  = omega * 60 / (2*pi);
-
     % ---- Rotor and stator losses [W] ----
     P_rotor  = rotorLosses( mag_thickness, D_rotor, L_ax, I_stator, omega_rpm  );
     P_stator = statorLosses( mag_thickness, D_rotor, L_ax, I_stator, omega_rpm  );
@@ -42,7 +41,7 @@ function [P_total, P_rotor, P_stator, tau_loss, shear_stress] = ...
     % ---- Equivalent loss torque [N·m] ----
     % tau = P / omega, guard against omega = 0.
     eps_omega = 1e-9;
-    omega_safe = omega_rpm ;
+    omega_safe = omega ;
     omega_safe(abs(omega_safe) < eps_omega) = eps_omega;
     tau_loss = P_total ./ omega_safe;
 

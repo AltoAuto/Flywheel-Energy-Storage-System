@@ -36,4 +36,3 @@ function [t, P_cmd, info] = load_cycle(cycle_type)
             error('Unknown cycle type: %s', cycle_type);
     end
 end
-

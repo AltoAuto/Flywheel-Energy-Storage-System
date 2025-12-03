@@ -69,7 +69,7 @@ function geom = compute_inertia(p, geom)
     %  3) Magnet mass & inertia
     %  -----------------------------
     R_i_mag = R_sh;
-    R_o_mag = R_sh + p.tMag;                      % [m] ASSUMPTION: radial magnet thickness
+    R_o_mag = R_sh + p.tMag;                      % [m] 
     L_mag   = geom.motor_axial_length_m;          % [m]
 
     % Volume and mass of magnet ring
@@ -94,8 +94,6 @@ function geom = compute_inertia(p, geom)
     geom.J_flywheel_kgm2  = J_fw;
     geom.J_shaft_kgm2     = J_shaft;
     geom.J_magnets_kgm2   = J_mag;
-    geom.J_total_kgm2     = J_total;
+    geom.J_total     = J_total;
 
-    % For backward compatibility with previous code using geom.J_total:
-    geom.J_total = J_total;
 end

@@ -44,17 +44,19 @@ function T_rotor = compute_temperature(p, geom, P_rotor_W)
     A_r = geom.A_rotor;       % total radiating area of rotor [m^2]
     A_h = geom.A_housing;     % inner housing area [m^2]
     F   = geom.viewFactor;    % view factor rotor → housing
+    % ---- Radiation resistance network ----
+    R_surf_R = (1 - eps_r) / (eps_r * A_r);
+    R_space  = 1 / (A_r * F);
+    R_surf_H = (1 - eps_h) / (eps_h * A_h);
+    R_rad    = R_surf_R + R_space + R_surf_H;
 
-    % Radiation resistance network (from heat transfer textbooks)
-    R_rad = (1-eps_r)/(eps_r*A_r) + 1/(A_r*F) + (1-eps_h)/(eps_h*A_h);
+    % ---- Solve for T_R^4 in closed form ----
+    Q = P_rotor_W(:);                         % [W], column vector
+    T_r4 = T_H^4 + (Q .* R_rad) / sigma;      % from Q = σ (T^4 - TH^4)/R_rad
 
-    % Compute T_R^4 from radiation equation
-    Q = P_rotor_W(:);            % ensure column vector
-    T_r4 = T_H^4 + (Q .* R_rad) / sigma;
-
-    % Guard numerical issues
+    % Guard numerical noise
     T_r4 = max(T_r4, 0);
 
-    % Final rotor temperature
-    T_rotor = T_r4 .^ 0.25;    
-end
+    % Back to temperature
+    T_rotor = T_r4 .^ 0.25;                   % [K]
+    T_rotor = reshape(T_rotor, size(P_rotor_W));  % match input shape

@@ -70,9 +70,6 @@ p.ambient_temperature_K          = 30 + 273.15;   % [K]
 % Max rotating group temperature (GIVEN: Table 1)
 p.rotor_max_temperature_K        = 100 + 273.15;  % [K]
 
-% Effective heat capacity of rotating group (ASSUMED; not given)
-p.rotor_effective_cp_J_per_kgK   = 800;           % [J/kg/K] lumped cp
-
 % Emissivities (GIVEN: Table 1)
 p.rotor_emissivity               = 0.4;   % [-] rotor
 p.housing_emissivity             = 0.9;   % [-] housing
@@ -93,6 +90,7 @@ p.magnet_thickness_min_m            = 0.002;  % [m] 2 mm minimum
 
 % AMB rated force (GIVEN: Table A.1)
 p.amb_rated_force_N              = 5780;   % [N]
+
 
 % Detailed AMB parameters come from ambParameters:
 %   ambParameters(rotor_diameter, amb_rated_force_N)
@@ -122,7 +120,6 @@ p.rho_steel = p.steel_density_kg_per_m3;
 p.rho_mag   = p.pm_density_kg_per_m3;
 
 % Thermal aliases
-p.cp_rotor  = p.rotor_effective_cp_J_per_kgK;  % ASSUMED cp
 p.Tamb      = p.ambient_temperature_K;
 p.T_max     = p.rotor_max_temperature_K;
 p.eps_rotor = p.rotor_emissivity;

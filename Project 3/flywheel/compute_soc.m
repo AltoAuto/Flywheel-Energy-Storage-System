@@ -52,9 +52,6 @@ function soc = compute_soc(mode, value, p, geom)
             % SoC fraction (can be vectorized)
             soc = (E - E_min) ./ (E_max - E_min);
 
-            % Clamp to [0,1] for numerical safety
-            soc = max(0, min(1, soc));
-
         case 'soc2omega'
             soc_in = value;
 

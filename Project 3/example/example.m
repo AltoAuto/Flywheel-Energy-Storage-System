@@ -1,0 +1,666 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Electromagnetic Flywheel Analysis and Control Implementation
+% ME 4053 - Fall 2025
+% Teni Adekunle Awomuti, Arsen Madanyan, Eleanor McKee, Julia Wong
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+clear; clc; close all;
+%% ========================================================================
+% SYSTEM PARAMETERS (From Table 1)
+%% ========================================================================
+constants.axial_clearance = 0.020; % [m]
+constants.radial_clearance_flywheel = 0.020; % [m]
+constants.radial_clearance_other = 0.001; % [m]
+constants.max_steel_tip_speed = 175; % [m/s]
+constants.max_pm_tip_speed = 175; % [m/s]
+constants.max_composite_tip_speed = 900; % [m/s]
+constants.rho_composite = 1600; % [kg/m^3]
+constants.rho_steel = 7850; % [kg/m^3]
+constants.rho_pm = 7850; % [kg/m^3]
+constants.max_temp = 100; % [C]
+constants.min_magnet_thickness = 0.002; % [m]
+%% ========================================================================
+% BASELINE SYSTEM PARAMETERS (From Appendix A)
+%% ========================================================================
+baseline.max_speed = 40000; % [rpm]
+baseline.flywheel_OD = 0.43; % [m]
+baseline.flywheel_ID = 0.084; % [m]
+baseline.flywheel_length = 1.0; % [m]
+baseline.magnet_thickness = 0.006; % [m]
+baseline.motor_rotor_diameter = 0.084; % [m] % shaft diameter (magnetsembedded)
+baseline.motor_length = 0.25; % [m]
+baseline.shaft_diameter = 0.084; % [m]
+baseline.rated_current = 500; % [A]
+% Thermal properties
+baseline.eps_rotor = 0.4; % dimensionless
+baseline.eps_housing = 0.9;
+% Housing temperature
+T_housing_C = 30; % [°C]
+% Derived geometry
+baseline.motor_rotor_radius = baseline.motor_rotor_diameter/2;
+% Flywheel surface area
+r_fw = baseline.flywheel_OD / 2;
+A_fw_curved = 2*pi*r_fw * baseline.flywheel_length;
+A_fw_ends = 2*pi*r_fw^2;
+A_flywheel_total = A_fw_curved + A_fw_ends;
+% Motor rotor area
+r_motor = baseline.motor_rotor_diameter / 2;
+A_motor_curved = 2*pi*r_motor * baseline.motor_length;
+A_motor_ends = 2*pi*r_motor^2;
+A_motor_total = A_motor_curved + A_motor_ends;
+% Total effective radiating rotor area
+baseline.geom.A_rotor = A_flywheel_total + A_motor_total;
+% Housing area
+r_house = r_fw + constants.radial_clearance_other;
+A_house_curved = 2*pi*r_house * baseline.flywheel_length;
+A_house_ends = 2*pi*r_house^2;
+baseline.geom.A_housing = A_house_curved + A_house_ends;
+baseline.geom.viewFactor = 0.886;
+%% ========================================================================
+% CALCULATE BASELINE PROPERTIES
+%% ========================================================================
+baseline = calcFlywheelMass(baseline, constants);
+baseline = calcInertia(baseline);
+baseline = calcEnergyCapacity(baseline, constants);
+baseline = calcRotatingGroupMass(baseline, constants);
+baseline.rated_torque = calcRatedTorque(baseline);
+% Corrected rated power units (W)
+baseline.rated_power = baseline.rated_torque * baseline.omega_max; % W
+baseline.specific_power = (baseline.rated_power/1000) / baseline.rotating_mass;
+% kW/kg
+% Print baseline information
+fprintf('========== BASELINE SYSTEM PROPERTIES ==========\n');
+fprintf('Max Speed: %.0f rpm\n', baseline.max_speed);
+fprintf('Flywheel Mass: %.2f kg\n', baseline.flywheel_mass);
+fprintf('Rotating Mass: %.2f kg\n', baseline.rotating_mass);
+fprintf('Inertia: %.4f kg·m²\n', baseline.inertia);
+fprintf('Max Energy: %.2f kWh\n', baseline.E_max/3.6e6);
+fprintf('Rated Torque: %.2f N·m\n', baseline.rated_torque);
+fprintf('Rated Power: %.2f kW\n', baseline.rated_power/1000);
+fprintf('Specific Energy: %.3f kWh/kg\n', baseline.specific_energy);
+fprintf('Specific Power: %.3f kW/kg\n', baseline.specific_power);
+fprintf('================================================\n\n');
+%% ========================================================================
+% DELIVERABLE 1a: LOSSES AND TEMPERATURE VS STATE OF CHARGE
+%% ========================================================================
+fprintf('Running Deliverable 1a: Losses and Temperature vs SoC...\n');
+SoC_range = linspace(0, 100, 200);
+loss = calcLossesVsSoC(baseline, SoC_range);
+Q_gen = loss.rotor;
+temperature_C = calcTemperatureFromLosses_radiative( ...
+Q_gen, T_housing_C, baseline, baseline.geom);
+% ---- PLOTS ----
+figure('Name','Deliverable 1a');
+subplot(2,1,1); hold on; grid on;
+plot(SoC_range, loss.rotor/1000, 'b', 'LineWidth',2);
+plot(SoC_range, loss.stator/1000, 'r', 'LineWidth',2);
+plot(SoC_range, loss.total/1000, 'k--', 'LineWidth',2);
+xlabel('State of Charge [%]'); ylabel('Losses [kW]');
+title('Losses vs SoC'); legend;
+subplot(2,1,2); hold on; grid on;
+plot(SoC_range, temperature_C, 'r', 'LineWidth',2);
+yline(constants.max_temp,'k--');
+xlabel('State of Charge [%]');
+ylabel('Temperature [°C]');
+title('Rotor Temperature vs SoC');
+fprintf(' Max temperature: %.1f °C\n', max(temperature_C));
+fprintf(' Deliverable 1a complete.\n\n');
+%% ========================================================================
+% DELIVERABLE 1b: Specific Power and Energy
+%% ========================================================================
+fprintf('Running Deliverable 1b...\n');
+fprintf(' Specific Energy: %.4f kWh/kg\n', baseline.specific_energy);
+fprintf(' Specific Power: %.3f kW/kg\n', baseline.specific_power);
+fprintf(' Deliverable 1b complete.\n\n');
+%% ========================================================================
+% DELIVERABLE 1c: Storage Cycle Efficiency via ODE45
+%% ========================================================================
+fprintf('Running Deliverable 1c...\n');
+cycle.time = linspace(0,900,21600);
+
+P_grid_W = baselineStorageCycle(cycle.time);
+cycle.power = P_grid_W / 1000;
+P_cycle_peak = max(abs(cycle.power));
+fprintf('Rated power: %.2f kW\n', baseline.rated_power/1000);
+fprintf('Peak |P_grid|: %.2f kW\n', P_cycle_peak);
+fprintf('Peak/Rated ratio: %.2f\n', P_cycle_peak/(baseline.rated_power/1000));
+[efficiency, summary] = calcStorageCycleEfficiency(baseline, cycle.time,cycle.power, constants);
+fprintf(' Cycle Efficiency: %.2f %%\n', 100*efficiency);
+fprintf(' Energy Charged: %.3f kWh\n', summary.charged/3.6e6);
+fprintf(' Energy Delivered: %.3f kWh\n', summary.delivered/3.6e6);
+fprintf(' Energy Losses: %.3f kWh\n', summary.losses/3.6e6);
+fprintf(' Ending SoC: %.1f %%\n', 100*summary.end_SoC);
+fprintf(' Deliverable 1c complete.\n\n');
+% plotting ω(t), SoC(t)
+omega_plot = sqrt(2*summary.E_time / baseline.inertia);
+SoC_plot = 100*(omega_plot.^2 - baseline.omega_min^2) ./ ...
+(baseline.omega_max^2 - baseline.omega_min^2);
+figure;
+subplot(3,1,1);
+plot(cycle.time, omega_plot,'LineWidth',1.5); grid on;
+ylabel('\omega (rad/s)'); title('Speed vs Time');
+subplot(3,1,2);
+plot(cycle.time, SoC_plot,'LineWidth',1.5); grid on;
+ylabel('SoC (%)');
+subplot(3,1,3);
+plot(cycle.time, cycle.power,'LineWidth',1.5); grid on;
+ylabel('Power (kW)'); xlabel('Time (s)');
+title('Grid Power Command');
+%% ========================================================================
+% DELIVERABLE 1d: AMB Step Response (Appendix B, cascaded loops, no AW)
+%% ========================================================================
+fprintf('Running Deliverable 1d (Appendix B, cascaded)...\n');
+% Rated AMB force from Appendix B
+F_rated = 5780; % [N]
+% AMB parameters at this rating
+amb = ambParameters(baseline.shaft_diameter, F_rated);
+ks = amb.stiffnessConstant; % [N/m]
+ki = amb.forceConstant; % [N/A]
+R = amb.coilResistance; % [ohm]
+L = amb.coilInductance; % [H]
+m_rot = baseline.rotating_mass; % rotor mass [kg]
+% ---------------- Position controller gains (Appendix B) ---------------
+Kpx = 1.2639e8;
+Kix = 1.16868e9;
+Kdx = 252790;
+wpx = 3770; % [rad/s] pole of derivative filter
+% ---------------- Current controller gains (Appendix B) -----------------
+Kpc = 345;
+Kic = 2149;
+% ---------------- Disturbance and simulation settings ------------------
+F_dist = 0.10 * F_rated; % 10% step disturbance
+tspan = linspace(0, 0.05, 4000); % 50 ms
+% State vector:
+% s = [ x; xdot; i; x_int; i_int; q ]
+% x = lateral position [m]
+% xdot = velocity [m/s]
+% i = coil current [A]
+% x_int = ∫ e_x dt (position error integrator)
+% i_int = ∫ e_i dt (current error integrator)
+% q = LPF state for derivative term
+x0 = [0; 0; amb.biasCurrent; 0; 0; 0];
+% -------------------- Simulate 0 rpm and 100% SoC ----------------------
+[t0, s0] = ode45(@(t,y) amb_ode_1d(t,y, m_rot, ks, ki, R, L, ...
+Kpx, Kix, Kdx, wpx, Kpc, Kic, ...
+F_dist, F_rated), ...
+tspan, x0);
+[t100, s100]= ode45(@(t,y) amb_ode_1d(t,y, m_rot, ks, ki, R, L, ...
+Kpx, Kix, Kdx, wpx, Kpc, Kic, ...
+F_dist, F_rated), ...
+tspan, x0);
+% Extract signals
+x0_um = s0(:,1)*1e6;
+i0 = s0(:,3);
+F0 = -ks*s0(:,1) + ki*s0(:,3);
+F0 = max(min(F0, F_rated), -F_rated);
+x100_um = s100(:,1)*1e6;
+i100 = s100(:,3);
+F100 = -ks*s100(:,1) + ki*s100(:,3);
+F100 = max(min(F100, F_rated), -F_rated);
+% --------------------------- Plots --------------------------------------
+figure('Name','Deliverable 1d: AMB Step Response (Appendix B)');
+subplot(3,1,1); hold on; grid on;
+plot(t0*1000, x0_um, 'b','LineWidth',1.5);
+plot(t100*1000, x100_um, 'r','LineWidth',1.5);
+ylabel('Position [\mum]');
+title('Rotor Position vs Time');
+legend('0 rpm','100% SoC');
+subplot(3,1,2); hold on; grid on;
+plot(t0*1000, i0, 'b','LineWidth',1.5);
+plot(t100*1000, i100, 'r','LineWidth',1.5);
+ylabel('Current [A]');
+title('Coil Current vs Time');
+subplot(3,1,3); hold on; grid on;
+plot(t0*1000, F0, 'b','LineWidth',1.5);
+plot(t100*1000, F100, 'r','LineWidth',1.5);
+ylabel('Force [N]'); xlabel('Time [ms]');
+title('AMB Force vs Time (with Rated Limit)');
+legend('0 rpm','100% SoC');
+fprintf(' Deliverable 1d complete.\n\n');
+%% ========================================================================
+% DELIVERABLE 1e: Dynamic Stiffness vs Frequency
+%% ========================================================================
+% Create a plot of the dynamic stiffness in the radial and tilting
+% direction for the magnetic bearing system as a function of frequency
+%
+% INPUT VARIABLES:
+% - baseline [struct] - system parameters
+% - amb_top, amb_bottom [struct] - AMB parameters
+% - controllers [struct] - position and force control gains
+% - freq_range [Hz] - frequency vector (suggest log-spaced)
+%
+% OUTPUT VARIABLES:
+% - K_radial [N/m] - radial stiffness array vs frequency
+% - K_tilting [N·m/rad] - tilting stiffness array vs frequency
+% - freq_range [Hz] - frequency vector
+%
+% GRAPHS REQUIRED:
+% Plot: Dynamic Stiffness vs Frequency
+% - X-axis: Frequency [Hz] - LOG SCALE
+% - Y-axis: Stiffness [MN/m for radial, MN·m/rad for tilting]
+% - Two lines: Radial Stiffness and Tilting Stiffness
+% TODO: Implement dynamic stiffness analysis
+% - Calculate transfer functions for bearing system
+% - Evaluate stiffness over frequency range
+% - Generate required plot with log scale
+%% ========================================================================
+% DELIVERABLE 1f: Rotor Runout vs SoC
+%% ========================================================================
+% Plot the rotor runout due to mass imbalance as a function of the SoC.
+%
+% INPUT VARIABLES:
+% - baseline [struct] - system parameters
+% - amb_top, amb_bottom [struct] - AMB parameters
+% - controllers [struct] - control gains
+% - SoC_range [%] - array from 0 to 100
+% - mass_imbalance [kg·m] - assumed imbalance (e.g., 1e-5 kg·m)
+%
+% OUTPUT VARIABLES:
+% - runout_x [m] - x-component of runout array vs SoC
+% - runout_y [m] - y-component of runout array vs SoC
+% - runout_total [m] - total runout = sqrt(x² + y²)
+% - SoC_range [%]
+%
+% GRAPHS REQUIRED:
+% Figure: Runout vs SoC
+% - X-axis: State of Charge [%]
+% - Y-axis: Total Runout [μm]
+% TODO: Implement runout analysis
+% - Assume mass imbalance magnitude
+% - Calculate runout at each SoC (different speeds)
+% - Generate required plot
+%% ========================================================================
+% DELIVERABLE 2: Design Study for New Storage Cycle
+%% ========================================================================
+% Perform a design study to find a flywheel design (objectives: minimize
+% losses, maximize specific power, maximize specific energy) for the new
+% storage cycle. Independent design variables are magnet thickness and
+% maximum rotational speed.
+%
+% INPUT VARIABLES:
+% - magnet_thickness_range [m] - array (e.g., 0.002 to 0.010 m)
+% - max_speed_range [rpm] - array (e.g., 20000 to 40000 rpm)
+% - new_cycle.time [s] - time vector for new power cycle
+% - new_cycle.power [kW] - power command for new cycle
+% - constants [struct] - all system constants from Table 1
+%
+% OUTPUT VARIABLES:
+% For each viable design:
+% - design_results(i).magnet_thickness [m]
+% - design_results(i).max_speed [rpm]
+% - design_results(i).flywheel_OD [m]
+% - design_results(i).flywheel_ID [m]
+% - design_results(i).flywheel_length [m]
+% - design_results(i).rotor_diameter [m]
+% - design_results(i).axial_length [m]
+% - design_results(i).shaft_diameter [m]
+% - design_results(i).rotating_mass [kg]
+% - design_results(i).E_max [J]
+% - design_results(i).inertia [kg·m²]
+% - design_results(i).specific_energy [kWh/kg]
+% - design_results(i).specific_power [kW/kg]
+% - design_results(i).efficiency [dimensionless]
+% - design_results(i).max_temperature [°C]
+%
+% CONSTRAINTS TO CHECK:
+% - Steel tip speed < 175 m/s
+% - PM tip speed < 175 m/s
+% - Composite tip speed < 900 m/s
+% - Max temperature < 100°C
+% - SoC never drops below 0% during cycle
+% - Can complete cycle starting from 50% SoC
+% - Magnet thickness ≥ 2 mm
+%
+% GRAPHS REQUIRED (Part 2a):
+% Figure: Design Trade-offs
+% - 3D scatter plot:
+% - X-axis: Specific Energy [kWh/kg]
+% - Y-axis: Specific Power [kW/kg]
+% - Z-axis: Efficiency [%]
+% - Include baseline design as distinct marker
+% - Shows Pareto frontier of viable designs
+%
+% Optional additional figures:
+% - 2D scatter: Specific energy vs specific power
+% - Contour plots showing design space
+% TODO: Load new storage cycle from Canvas
+% new_cycle.time = [0, ...]; % [s]
+% new_cycle.power = [...]; % [kW]
+% TODO: Implement design study
+% - Define search ranges for magnet thickness and max speed
+% - Loop through design space
+% - For each design:
+% - Size all components based on constraints
+% - Simulate new storage cycle
+% - Check all constraints
+% - Store results if viable
+% - Generate trade-off plots
+%% ========================================================================
+% DELIVERABLE 2b: Select Optimal Design
+%% ========================================================================
+% Select an optimal design that has comparable or improved performance
+% relative to the baseline design. Provide dimensions and justification.
+%
+% INPUT VARIABLES:
+% - design_results [struct array] - from part 2a
+% - baseline.specific_energy [kWh/kg]
+% - baseline.specific_power [kW/kg]
+% - baseline.efficiency [dimensionless]
+%
+% OUTPUT VARIABLES:
+% - optimal_design [struct] containing:
+% - magnet_thickness [m]
+% - max_speed [rpm]
+% - flywheel_OD, flywheel_ID, flywheel_length [m]
+% - rotor_diameter, axial_length [m]
+% - shaft_diameter [m]
+% - rotating_mass [kg]
+% - specific_energy [kWh/kg]
+% - specific_power [kW/kg]
+% - efficiency [%]
+% - max_temperature [°C]
+%
+% REPORT COMPARISONS:
+% - Max Speed [rpm]
+% - Magnet Thickness [mm]
+% - Flywheel OD [m]
+% - Flywheel ID [m]
+% - Flywheel Length [m]
+% - Motor Rotor Diam [m]
+% - Motor Length [m]
+% - Shaft Diameter [m]
+% - Rotating Mass [kg]
+% - Specific Energy [kWh/kg]
+% - Specific Power [kW/kg]
+% - Efficiency [%]
+% TODO: Select optimal design from design_results
+% - Apply selection criteria (e.g., maximize weighted score)
+% - Document justification in report
+% - Create comparison table
+%% ========================================================================
+% DELIVERABLE 3a: Design Controllers for Optimal System
+%% ========================================================================
+% Design AMB controllers (position and force control) for the optimal
+% design that provide comparable or improved performance relative to
+% baseline.
+%
+% INPUT VARIABLES:
+% - optimal_design.rotating_mass [kg]
+% - optimal_design.shaft_diameter [m]
+% - optimal_design.flywheel_length [m]
+% - amb_top_opt [struct] - from ambParameters()
+% - amb_bottom_opt [struct] - from ambParameters()
+%
+% OUTPUT VARIABLES:
+% - controllers_opt.top.pos [struct]:
+% - Kp [A/m] - proportional gain
+% - Ki [A/(m·s)] - integral gain
+% - Kd [A·s/m] - derivative gain
+% - controllers_opt.top.force [struct]:
+% - Kp [V/A] - proportional gain
+% - Ki [V/(A·s)] - integral gain
+% - controllers_opt.bottom [struct] - similar structure
+%
+% DESIGN APPROACH:
+% - Choose desired natural frequency and damping ratio
+% - Use root locus, pole placement, or frequency response methods
+% - Verify stability margins (gain margin, phase margin)
+% - Consider gyroscopic effects at high speed
+%
+% REPORT REQUIREMENTS:
+% Present transfer functions as equations:
+% Position Controller: G_pos(s) = Kp + Ki/s + Kd·s
+% Force Controller: G_force(s) = Kp + Ki/s
+% Include actual gain values and design justification
+% TODO: Design controllers for optimal system
+% - Get AMB parameters for optimal design
+% - Design position and force controllers
+% - Verify performance specifications
+% - Document transfer functions
+%% ========================================================================
+% DELIVERABLE 3b: Compare AMB Step Response
+%% ========================================================================
+% Compare the optimal design's AMB performance to the baseline by
+% simulating the same step disturbance test.
+%
+% INPUT VARIABLES:
+% - All inputs from Deliverable 1d, but for optimal_design
+% - controllers_opt [struct] - designed controllers
+% - amb_top_opt, amb_bottom_opt [struct] - AMB parameters
+%
+% OUTPUT VARIABLES:
+% Same as 1d, but for optimal design:
+% - response_opt_0 [struct] - at 0 rpm
+% - response_opt_100 [struct] - at 100% SoC
+%
+% GRAPHS REQUIRED:
+% Plot 1: Position Response Comparison
+% - X-axis: Time [ms]
+% - Y-axis: Position [μm]
+% - Four lines: Baseline 0%, Baseline 100%, Optimal 0%, Optimal 100%
+% OR two lines: Baseline 100%, Optimal 100%
+% Plot 2: Control Current Comparison
+% - X-axis: Time [ms]
+% - Y-axis: Current [A]
+% - Lines for baseline vs optimal at 100% SoC
+% Plot 3: Force Comparison
+% - X-axis: Time [ms]
+% - Y-axis: Force [N]
+% - Lines for baseline vs optimal at 100% SoC
+%
+% PERFORMANCE METRICS TO COMPARE:
+% - Settling time [ms]
+% - Overshoot [%]
+% - Steady-state error [μm]
+% - Peak current [A]
+% TODO: Simulate step response for optimal design
+% - Use same disturbance as baseline (10% of rated force)
+% - Simulate at 0 rpm and 100% SoC
+% - Generate comparison plots
+% - Calculate performance metrics
+%% ========================================================================
+% DELIVERABLE 3c: Compare Dynamic Stiffness and Rotor Runout
+%% ========================================================================
+% Compare the optimal design's bearing stiffness and imbalance response
+% to the baseline system.
+%
+% INPUT VARIABLES:
+% - All inputs from Deliverables 1e and 1f, but for optimal_design
+% - controllers_opt [struct] - designed controllers
+% - amb_top_opt, amb_bottom_opt [struct] - AMB parameters
+%
+% OUTPUT VARIABLES:
+% - K_radial_opt [N/m] - radial stiffness vs frequency
+% - K_tilting_opt [N·m/rad] - tilting stiffness vs frequency
+% - runout_x_opt [m] - x-component vs SoC
+% - runout_y_opt [m] - y-component vs SoC
+% - runout_total_opt [m] - total runout vs SoC
+%
+% GRAPHS REQUIRED:
+% Plot 1: Radial Stiffness Comparison
+% - X-axis: Frequency [Hz] - LOG SCALE
+% - Y-axis: Radial Stiffness [MN/m]
+% - Two lines: Baseline, Optimal Design
+% Plot 2: Tilting Stiffness Comparison
+% - X-axis: Frequency [Hz] - LOG SCALE
+% - Y-axis: Tilting Stiffness [MN·m/rad]
+% - Two lines: Baseline, Optimal Design
+% Plot 3: Rotor Runout Comparison
+% - X-axis: State of Charge [%]
+% - Y-axis: Total Runout [μm]
+% - Two lines: Baseline, Optimal Design
+% TODO: Calculate stiffness and runout for optimal design
+% - Calculate dynamic stiffness over frequency range
+% - Calculate runout vs SoC with same imbalance assumption
+% - Generate comparison plots with baseline
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% SUPPORTING FUNCTIONS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function design = calcFlywheelMass(design, constants)
+V_flywheel = pi/4 * (design.flywheel_OD^2 - design.flywheel_ID^2) *design.flywheel_length;
+design.flywheel_mass = constants.rho_composite * V_flywheel;
+end
+function design = calcInertia(design)
+r_o = design.flywheel_OD/2;
+r_i = design.flywheel_ID/2;
+design.inertia = 0.5*design.flywheel_mass*(r_o^2 + r_i^2);
+end
+function design = calcEnergyCapacity(design, constants)
+omega_max = design.max_speed * 2*pi/60;
+omega_min = omega_max/2;
+design.E_max = 0.5*design.inertia*(omega_max^2 - omega_min^2);
+design.omega_max = omega_max;
+design.omega_min = omega_min;
+end
+function design = calcRotatingGroupMass(design, constants)
+total_length = design.flywheel_length + 2*design.motor_length +4*constants.axial_clearance;
+V_shaft = pi/4 * design.shaft_diameter^2 * total_length;
+m_shaft = constants.rho_steel * V_shaft;
+magnet_OD = design.motor_rotor_diameter; % magnets embedded → no external OD increase
+V_magnets = pi/4 * (magnet_OD^2 - design.motor_rotor_diameter^2) *design.motor_length;
+V_rotor_steel = pi/4 * design.motor_rotor_diameter^2 * design.motor_length;
+m_motor = constants.rho_pm * V_magnets + constants.rho_steel *V_rotor_steel;
+design.rotating_mass = design.flywheel_mass + m_shaft + m_motor;
+design.specific_energy = design.E_max/design.rotating_mass/3.6e6;
+end
+function T_rated = calcRatedTorque(baseline)
+shear_rated = magneticShear(baseline.magnet_thickness, 1.0);
+D = baseline.motor_rotor_diameter;
+L = baseline.motor_length;
+T_rated = shear_rated * (pi/2) * D^2 * L;
+end
+function losses = calcLossesVsSoC(baseline, SoC)
+omega = baseline.omega_min + (SoC/100).*(baseline.omega_max -baseline.omega_min);
+rpm = omega * 60/(2*pi);
+P_rated = baseline.rated_power; % W
+T_demand = P_rated ./ omega;
+T_limit = baseline.rated_torque;
+T_oper = min(T_demand, T_limit);
+I_pu = T_oper / T_limit;
+N = length(SoC);
+losses.rotor = zeros(1,N);
+losses.stator = zeros(1,N);
+for k = 1:N
+losses.rotor(k) = rotorLosses(baseline.magnet_thickness, ...
+baseline.motor_rotor_diameter, baseline.motor_length, ...
+I_pu(k), rpm(k));
+losses.stator(k) = statorLosses(baseline.magnet_thickness, ...
+baseline.motor_rotor_diameter, baseline.motor_length, ...
+I_pu(k), rpm(k));
+end
+losses.total = losses.rotor + losses.stator;
+end
+function T_rot = calcTemperatureFromLosses_radiative(Q_gen, T_housing_C,baseline, geom)
+sigma = 5.670374419e-8;
+Q = Q_gen(:);
+T_h_K = T_housing_C + 273.15;
+A_r = geom.A_rotor;
+A_h = geom.A_housing;
+disp(A_r);
+disp(A_h);
+F = geom.viewFactor;
+eps_r = baseline.eps_rotor;
+eps_h = baseline.eps_housing;
+disp(eps_r);
+disp(eps_h);
+R_rad = (1-eps_r)/(eps_r*A_r) + 1/(A_r*F) + (1-eps_h)/(eps_h*A_h);
+T_r4 = T_h_K^4 + (Q * R_rad) / sigma;
+T_rot = T_r4.^(1/4) - 273.15;
+
+T_rot = reshape(T_rot, size(Q_gen));
+end
+function [efficiency, summary] = calcStorageCycleEfficiency(baseline, time,power_cmd_kW, constants)
+P_grid_W = power_cmd_kW * 1000;
+omega0 = sqrt(baseline.omega_min^2 + ...
+0.5*(baseline.omega_max^2 - baseline.omega_min^2));
+function domega = odefun(t, omega)
+P_cmd = interp1(time, P_grid_W, t);
+w_safe = max(omega, 1e-3);
+T_g = P_cmd / w_safe;
+T_g = max(min(T_g, baseline.rated_torque), -baseline.rated_torque);
+I_pu = max(min(T_g/baseline.rated_torque,1),-1);
+I_mag = abs(I_pu);
+rpm = omega*60/(2*pi);
+Lr = rotorLosses(baseline.magnet_thickness, ...
+baseline.motor_rotor_diameter, ...
+baseline.motor_length, ...
+I_mag, rpm);
+Ls = statorLosses(baseline.magnet_thickness, ...
+baseline.motor_rotor_diameter, ...
+baseline.motor_length, ...
+I_mag, rpm);
+P_losses = Lr + Ls;
+dEdt = -P_cmd - P_losses;
+domega = dEdt / (baseline.inertia*w_safe);
+end
+[t, omega] = ode45(@odefun, time, omega0);
+E_time = 0.5*baseline.inertia .* omega.^2;
+P_grid_full = P_grid_W(:);
+E_del = trapz(time, max(P_grid_full,0));
+E_chg = trapz(time, max(-P_grid_full,0));
+P_losses_hist = zeros(size(time));
+for k = 1:length(time)
+w = max(omega(k), 1e-3);
+rpm = w*60/(2*pi);
+T_em = P_grid_W(k) / w;
+T_em = max(min(T_em,baseline.rated_torque), -baseline.rated_torque);
+I_pu = max(min(T_em/baseline.rated_torque,1),-1);
+I_mag = abs(I_pu);
+Lr = rotorLosses(baseline.magnet_thickness, ...
+baseline.motor_rotor_diameter, ...
+baseline.motor_length, ...
+I_mag, rpm);
+Ls = statorLosses(baseline.magnet_thickness, ...
+baseline.motor_rotor_diameter, ...
+baseline.motor_length, ...
+I_mag, rpm);
+P_losses_hist(k) = Lr + Ls;
+end
+E_losses = trapz(time, P_losses_hist);
+efficiency = E_del / (E_chg + E_losses);
+summary.time = t;
+summary.omega = omega;
+summary.E_time = E_time;
+summary.delivered = E_del;
+summary.charged = E_chg;
+summary.losses = E_losses;
+summary.end_SoC = (omega(end)^2 - baseline.omega_min^2) / ...
+(baseline.omega_max^2 - baseline.omega_min^2);
+end
+% ------------------------- AMB ODE --------------------------------------
+function dst = amb_ode_1d(~, s, m_rot, ks, ki, R, L, ...
+Kpx, Kix, Kdx, wpx, Kpc, Kic, ...
+F_dist, F_rated)
+x = s(1);
+xdot = s(2);
+i = s(3);
+x_int = s(4);
+i_int = s(5);
+q = s(6);
+% ----- 1. Position loop: e_x = x_ref - x (x_ref = 0) -----
+e_x = -x;
+x_int_dot = e_x;
+% Derivative filter state: q_dot = wpx*(e_x - q)
+q_dot = wpx * (e_x - q);
+% PID + filtered derivative -> force command
+F_cmd = Kpx*e_x + Kix*x_int + Kdx*q_dot;
+% ----- 2. Convert force command to current reference -----
+i_ref = F_cmd / ki;
+% ----- 3. Current loop (PI) -----
+e_i = i_ref - i;
+i_int_dot = e_i;
+v = Kpc*e_i + Kic*i_int; % applied phase voltage
+% ----- 4. Coil electrical dynamics -----
+i_dot = (v - R*i)/L;
+% ----- 5. Magnetic bearing force with saturation -----
+F_b = -ks*x + ki*i;
+F_b = max(min(F_b, F_rated), -F_rated);
+% ----- 6. Rotor lateral dynamics -----
+xddot = (F_b + F_dist) / m_rot;
+% Assemble derivatives
+dst = [xdot;
+xddot;
+i_dot;
+x_int_dot;
+i_int_dot;
+q_dot];
+end

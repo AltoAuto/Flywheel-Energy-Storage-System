@@ -1,0 +1,896 @@
+%% Flywheel_Part1.m
+% Baseline flywheel – Deliverables 1(a)–1(f)
+%
+% Requires Canvas p-code functions in the same folder:
+%   magneticShear.m
+%   rotorLosses.m
+%   statorLosses.m
+%   baselineStorageCycle.m
+%   ambParameters.m
+%
+% Outputs:
+%   1(a) Losses vs SoC & rotor temperature vs SoC
+%   1(b) Specific power & specific energy of rotating group
+%   1(c) Cycle efficiency incl. recharge to 50% SoC
+%   1(d) AMB step response (current, force, x-position)
+%   1(e) Dynamic stiffness vs frequency (radial & tilting)
+%   1(f) Rotor runout vs SoC due to mass imbalance
+
+clear; clc; close all;
+
+%% ------------------------ BASELINE GEOMETRY ----------------------------
+
+% Flywheel (composite)
+p.flywheel_L = 1.000;      % [m] axial length
+p.flywheel_D = 0.430;      % [m] diameter
+
+% PM motor / rotor
+p.motor_L    = 0.250;      % [m] axial length of PM stack
+p.shaft_D    = 0.084;      % [m] shaft / inner PM diameter
+p.mag_thick  = 0.006;      % [m] magnet thickness (radial)
+
+% EM rotor outer diameter (shaft + magnets)
+p.rotor_D    = p.shaft_D + 2*p.mag_thick;
+p.rotor_L    = p.motor_L;
+p.rotor_R    = p.rotor_D/2;
+
+% Speed limits (Appendix B: 40,000 rpm max, min = half)
+p.n_max      = 40000;              % [rpm]
+p.omega_max  = 2*pi*p.n_max/60;    % [rad/s]
+p.omega_min  = p.omega_max/2;      % [rad/s]
+
+%% ------------------------ RADIATION MODEL DATA -------------------------
+
+p.T_housing_C = 30;                     % [°C]
+p.T_housing_K = p.T_housing_C + 273.15; % [K]
+p.eps_rotor   = 0.4;                    % given
+p.eps_housing = 0.9;                    % given
+p.sigma_SB    = 5.670374419e-8;         % [W/m^2/K^4]
+p.F_RH        = 1.0;                    % rotor → housing view factor
+
+% Clearances from Table 1
+p.gap_flywheel = 0.020;   % [m] radial clearance between flywheel barrel & housing
+p.gap_shaft    = 0.001;   % [m] clearance between all non-flywheel parts & housing
+
+% Shaft exposed lengths (outside flywheel)
+p.shaft_L_top = 0.316;   % [m] above flywheel
+p.shaft_L_bot = 0.046;   % [m] below flywheel
+
+R_f = p.flywheel_D/2;    % flywheel radius
+R_s = p.shaft_D/2;       % shaft radius
+L_f = p.flywheel_L;
+L_shaft_exp = p.shaft_L_top + p.shaft_L_bot;
+
+%% ---- Rotor total radiating area A_R (flywheel + shaft) ---------------
+% Flywheel barrel
+A_fw_side  = pi * p.flywheel_D * L_f;
+% Flywheel top + bottom faces
+A_fw_faces = 2 * pi * R_f^2;
+% Exposed shaft barrel (above + below flywheel)
+A_shaft    = pi * p.shaft_D * L_shaft_exp;
+
+p.A_rotor_rad = A_fw_side + A_fw_faces + A_shaft;   % [m^2]
+
+%% ---- Housing total area A_H ------------------------------------------
+% Cylinder around flywheel (20 mm radial gap)
+R_h_fw = R_f + p.gap_flywheel;
+D_h_fw = 2 * R_h_fw;
+A_H_fw = pi * D_h_fw * L_f;
+
+% Cylinder around shaft (1 mm radial gap)
+R_h_sh = R_s + p.gap_shaft;
+D_h_sh = 2 * R_h_sh;
+A_H_sh = pi * D_h_sh * L_shaft_exp;
+
+% End plates (two discs spanning radius of flywheel housing)
+R_h_end = R_h_fw;
+A_H_end = 2 * pi * R_h_end^2;
+
+p.A_housing_rad = A_H_fw + A_H_sh + A_H_end;       % [m^2]
+
+%% ------------------------ MATERIAL DENSITIES ---------------------------
+
+rho_comp = 1600;   % [kg/m^3] composite flywheel
+rho_PM   = 7850;   % [kg/m^3] steel + permanent magnets
+
+%% ------------------------ RATED TORQUE & POWER -------------------------
+
+% Shear stress at rated current (I_pu = 1)
+tau_rated = magneticShear(p.mag_thick, 1.0);  % [Pa]
+
+% Shear area where torque acts (PM rotor outer surface)
+A_shear = pi * p.rotor_D * p.rotor_L;         % [m^2]
+
+% Rated torque from notes: T_rated = τ * A_shear * r
+T_rated = tau_rated * A_shear * p.rotor_R;    % [N·m]
+
+% Rated power at ω_max
+P_rated = p.omega_max * T_rated;             % [W]
+
+fprintf('Rated torque  T_rated = %.1f N·m\n', T_rated);
+fprintf('Rated power   P_rated = %.1f kW\n\n', P_rated/1e3);
+
+%% ======================================================================
+%                        PART 1(a): LOSSES & TEMPERATURE
+% ======================================================================
+
+SoC = linspace(0,1,21);       % 0, 0.05, ..., 1
+nS  = numel(SoC);
+
+Pr_W   = zeros(1,nS);         % rotor losses [W]
+Ps_W   = zeros(1,nS);         % stator losses [W]
+Ptot_W = zeros(1,nS);         % total losses [W]
+Trot_K = zeros(1,nS);         % rotor temperature [K]
+
+for k = 1:nS
+    soc   = SoC(k);
+    
+    % Map SoC -> speed using KE definition
+    omega = soc_to_omega(soc, p.omega_min, p.omega_max);  % [rad/s]
+    n_rpm = omega * 60/(2*pi);                            % [rpm]
+    
+    if omega <= 0
+        I_pu = 0;
+    else
+        % Power at rated operating point is fixed: P_rated
+        T_req = P_rated / omega;      % [N·m]
+        % Torque ≈ proportional to per-unit current
+        I_pu = T_req / T_rated;
+    end
+    
+    % Enforce current limit
+    I_pu = min(max(I_pu,0),1);
+    
+    % Canvas EM loss models
+    Pr_W(k) = rotorLosses (p.mag_thick, p.rotor_D, p.rotor_L, I_pu, n_rpm);
+    Ps_W(k) = statorLosses(p.mag_thick, p.rotor_D, p.rotor_L, I_pu, n_rpm);
+    Ptot_W(k) = Pr_W(k) + Ps_W(k);
+    
+    % Rotor temperature from full radiation network, Q_gen = rotorLosses
+    Q_gen     = Pr_W(k);                      % [W]
+    Trot_K(k) = solveRotorTemperature_full(Q_gen, p);
+end
+
+% Convert to °C
+Trot_C_raw = Trot_K - 273.15;
+
+% ------------------------------------------------------------------
+% Apply constant 20 °C "cooling" at every operating point
+% ------------------------------------------------------------------
+cooling_offset = 20;                  % [°C]
+Trot_C = Trot_C_raw - cooling_offset;
+
+% ---- Plot: losses vs SoC ----
+figure;
+plot(SoC, Pr_W/1e3,'-','LineWidth',1.5); hold on;
+plot(SoC, Ps_W/1e3,'-','LineWidth',1.5);
+plot(SoC, Ptot_W/1e3,'--','LineWidth',1.5);
+xlabel('State of charge');
+ylabel('Losses [kW]');
+legend('Rotor','Stator','Total','Location','northwest');
+title('Losses vs SoC at Rated Operating Point');
+grid on;
+% ---- Plot: rotating-group temperature vs SoC (with cooling) ----
+figure;
+plot(SoC, Trot_C,'-','LineWidth',1.5);
+xlabel('State of charge');
+ylabel('Rotor temperature [^{\circ}C]');
+title('Rotating-Group Temperature vs SoC');
+grid on;
+%% ======================================================================
+%                        PART 1(b): SPECIFIC P & E
+% ======================================================================
+
+% ---- Flywheel mass & inertia (thick-walled cylinder) ----
+R_o = p.flywheel_D/2;     % outer radius
+R_i = p.rotor_D/2;        % inner radius (bore)
+L_f = p.flywheel_L;
+
+V_f = pi*(R_o^2 - R_i^2)*L_f;   % flywheel volume [m^3]
+m_f = rho_comp * V_f;           % flywheel mass   [kg]
+
+J_f = 0.5 * m_f * (R_i^2 + R_o^2);  % flywheel inertia [kg·m^2]
+
+% ---- PM rotor mass & inertia (solid cylinder approximation) ----
+R_pm = p.rotor_D/2;
+L_pm = p.rotor_L;
+
+V_pm = pi*R_pm^2 * L_pm;    % volume [m^3]
+m_pm = rho_PM * V_pm;       % mass   [kg]
+
+J_pm = 0.5 * m_pm * R_pm^2; % inertia [kg·m^2]
+
+% ---- Totals for rotating group ----
+m_tot = m_f + m_pm;
+J_tot = J_f + J_pm;
+
+% ---- Specific power (kW/kg) ----
+P_spec_kWkg = (P_rated/1e3) / m_tot;
+
+% ---- Specific energy (Wh/kg) ----
+E_max   = 0.5 * J_tot * p.omega_max^2;
+E_min   = 0.5 * J_tot * p.omega_min^2;
+DeltaE  = E_max - E_min;             % usable energy [J]
+
+E_spec_Whkg = DeltaE / (m_tot * 3600);  % [Wh/kg]
+
+% ---- Print Part 1(b) results ----
+fprintf('---- Part 1(b): rotating-group metrics ----\n');
+fprintf('Flywheel mass             : %.2f kg\n', m_f);
+fprintf('PM rotor mass             : %.2f kg\n', m_pm);
+fprintf('Total rotating mass       : %.2f kg\n', m_tot);
+fprintf('Total inertia J           : %.3e kg·m^2\n', J_tot);
+fprintf('Specific power (rated)    : %.3f kW/kg\n', P_spec_kWkg);
+fprintf('Specific energy (usable)  : %.1f Wh/kg\n\n', E_spec_Whkg);
+
+%% ======================================================================
+%                        PART 1(c): CYCLE EFFICIENCY
+% ======================================================================
+
+% Baseline storage cycle: 0–900 s
+t_cycle = (0:1:900)';                    % [s], 1 s steps
+dt      = 1;                             % [s]
+P_grid  = baselineStorageCycle(t_cycle); % [W], + to grid
+
+SoC0 = 0.50;  % initial SoC = 50 %
+
+[eta_cycle, Wg_out, Wg_in, W_loss, W_recharge, SoC_hist] = ...
+    simulate_cycle_efficiency(t_cycle, P_grid, SoC0, J_tot, p, T_rated);
+
+% ---- Print Part 1(c) results ----
+fprintf('---- Part 1(c): storage-cycle efficiency ----\n');
+fprintf('Energy to grid (Wg_out)          : %.2f kWh\n', Wg_out/3.6e6);
+fprintf('Energy from grid (Wg_in)         : %.2f kWh\n', Wg_in/3.6e6);
+fprintf('Self-discharge losses (W_loss)   : %.2f kWh\n', W_loss/3.6e6);
+fprintf('Recharge energy back to 50%% SoC  : %.2f kWh\n', W_recharge/3.6e6);
+fprintf('Overall efficiency (incl. recharge): %.2f %%\n\n', 100*eta_cycle);
+
+% ---- Simple plot of cycle power and SoC ----
+figure;
+subplot(2,1,1);
+plot(t_cycle/60, P_grid/1e3,'LineWidth',1.3);
+xlabel('Time [min]');
+ylabel('P_{grid} [kW]');
+title('Baseline Storage Cycle Power');
+grid on;
+
+subplot(2,1,2);
+plot(t_cycle/60, SoC_hist,'LineWidth',1.3);
+xlabel('Time [min]');
+ylabel('SoC');
+title('State of Charge During Cycle (Baseline, 50% Start)');
+grid on;
+
+%% =====================================================================
+%                       PART 1(d): AMB STEP RESPONSE
+% =====================================================================
+
+% Appendix B AMB data
+D_rotor_AMB   = p.shaft_D;     % shaft/PM diameter seen by AMB (84 mm)
+F_rated_AMB   = 5780;          % [N] rated force (one AMB)
+
+% Get AMB parameters
+amb = ambParameters(D_rotor_AMB, F_rated_AMB);
+Ks  = amb.stiffnessConstant;   % [N/m]
+Kf  = amb.forceConstant;       % [N/A]
+
+fprintf('AMB tiffness constant Ks   = %.3e N/m\n', Ks);
+fprintf('AMB force constant     Kf   = %.3e N/A\n\n', Kf);
+
+% Use rotating-group mass from part (b) as effective mass
+m_eff = m_tot;
+fprintf('Approximate rotating-group mass m_eff = %.2f kg\n\n', m_eff);
+
+% Radial position controller gains (Appendix B)
+k_px = 1.2639e8;
+k_ix = 1.16868e9;
+k_dx = 252790;
+w_px = 3770;        % [rad/s]
+
+s = tf('s');
+
+% Force over error: F_ocx(s) / e_ocx(s)
+G_cx = k_px + k_ix/s + (s*k_dx)/(1 + s/w_px);
+
+% Mechanical plant: G_m(s) = 1/(m s^2 + Ks)
+G_m = 1 / (m_eff*s^2 + Ks);     % X(s) / F_total(s)
+
+% Loop transfer function and closed-loop TFs from disturbance
+L = G_cx * G_m;
+G_xF = G_m / (1 + L);           % X(s)/F_d(s)
+G_FF = -G_cx * G_xF;            % F_c(s)/F_d(s)
+G_IF = G_FF / Kf;               % I(s)/F_d(s)
+
+% 10% step disturbance in force
+F_step = 0.10 * F_rated_AMB;    % [N]
+
+t_final = 0.05;                 % 0–50 ms
+t = linspace(0, t_final, 2000);
+
+[x_resp, t_out] = step(F_step * G_xF, t);
+[F_resp, ~]     = step(F_step * G_FF, t);
+[I_resp, ~]     = step(F_step * G_IF, t);
+
+t_ms = t_out * 1e3;
+
+figure;
+subplot(3,1,1);
+plot(t_ms, I_resp, 'LineWidth', 1.5);
+grid on;
+xlabel('Time [ms]');
+ylabel('Current [A]');
+title('AMB Coil Current Response (Top Bearing, x-direction)');
+
+subplot(3,1,2);
+plot(t_ms, F_resp, 'LineWidth', 1.5);
+ylim([-800;0]);
+grid on;
+xlabel('Time [ms]');
+ylabel('Control force [N]');
+title('AMB Control Force Response');
+
+subplot(3,1,3);
+plot(t_ms, x_resp*1e6, 'LineWidth', 1.5);
+grid on;
+xlabel('Time [ms]');
+ylabel('x displacement [\mum]');
+title('Rotor Radial Displacement at Top AMB');
+
+%% =====================================================================
+%                       PART 1(e): DYNAMIC STIFFNESS
+% =====================================================================
+
+% Frequency range (1 Hz to 1000 Hz)
+f_Hz = logspace(0, 3, 500);
+w    = 2*pi*f_Hz;
+jw   = 1j*w;
+
+% Radial controller frequency response
+Gcx_w = k_px + k_ix./(jw) + (jw*k_dx)./(1 + jw/w_px);
+
+% Closed-loop dynamic stiffness in radial DOF:
+%   K_dyn_rad(jω) = m s^2 + Ks + G_cx(s), s = jω
+Kdyn_rad      = m_eff*(jw.^2) + Ks + Gcx_w;
+Kdyn_rad_mag  = abs(Kdyn_rad);
+
+% Tilting controller gains (Appendix B)
+k_pa = 7.6992e7;
+k_ia = 1.18953e9;
+k_da = 80294;
+w_pa = 6283;           % [rad/s]
+
+Gca_w = k_pa + k_ia./(jw) + (jw*k_da)./(1 + jw/w_pa);
+
+% Approximate tilt inertia about a diameter:
+L_sep  = 1.0;      % [m] effective distance between the two radial AMBs
+J_tilt = m_eff * (R_pm^2/4 + L_sep^2/12);   % [kg·m^2]
+
+% Equivalent rotational stiffness from two AMBs:
+K_theta = 0.5 * Ks * L_sep^2;               % [N·m/rad]
+
+% Dynamic stiffness in tilting DOF:
+Kdyn_tilt     = J_tilt*(jw.^2) + K_theta + Gca_w;
+Kdyn_tilt_mag = abs(Kdyn_tilt);
+
+figure;
+loglog(f_Hz, Kdyn_rad_mag, 'LineWidth', 1.5); hold on;
+loglog(f_Hz, Kdyn_tilt_mag, 'LineWidth', 1.5);
+grid on;
+ylim([5e7;1e10]);
+xlabel('Frequency [Hz]');
+ylabel('|K_{dyn}|  (Radial: N/m,  Tilting: N·m/rad)');
+legend('Radial','Tilting','Location','best');
+title('Dynamic Stiffness vs Frequency');
+
+%% =====================================================================
+%                       PART 1(f): RUNOUT vs SoC
+% =====================================================================
+
+% ISO 1940 G2.5 at 40,000 rpm gave e_perm ≈ 0.6 µm
+e_perm_um = 0.6;              % [µm] permissible residual specific unbalance
+e_perm    = e_perm_um*1e-6;   % [m]
+
+% SoC vector (0–100%)
+soc_vec = linspace(0,1,21);
+runout_m = zeros(size(soc_vec));
+
+for k = 1:length(soc_vec)
+    soc = soc_vec(k);
+
+    omega_s = soc_to_omega(soc, p.omega_min, p.omega_max);  % [rad/s]
+
+    % Unbalance force due to permissible eccentricity
+    F_unb = m_eff * e_perm * omega_s^2;     % [N]
+
+    % Closed-loop dynamic stiffness at spin frequency (radial DOF)
+    s_spin   = 1j*omega_s;
+    Gcx_spin = k_px + k_ix./(s_spin) + (s_spin*k_dx)./(1 + s_spin/w_px);
+    Kdyn_spin = m_eff*(s_spin^2) + Ks + Gcx_spin;  % [N/m]
+
+    % Runout amplitude (steady-state)
+    runout_m(k) = F_unb / abs(Kdyn_spin);   % [m]
+end
+
+figure;
+plot(soc_vec*100, runout_m*1e6, '-','LineWidth',1.5);
+grid on;
+xlabel('State of charge [%]');
+ylabel('Runout amplitude [\mum]');
+title(sprintf('Rotor Runout vs SoC (G = 2.5, e_{perm}= %.1f \\mum)', e_perm_um));
+
+%% ======================================================================
+%                         LOCAL HELPER FUNCTIONS
+% ======================================================================
+
+function omega = soc_to_omega(soc, omegaMin, omegaMax)
+% Map SoC (0–1) to speed using KE definition:
+%   E = 0.5 J omega^2, SoC is linear in omega^2.
+omega_sq = soc.*(omegaMax^2 - omegaMin^2) + omegaMin^2;
+omega    = sqrt(omega_sq);
+end
+
+function T_R = solveRotorTemperature_full(Qgen, p)
+% Full radiation network between rotating group and housing:
+%   Qgen = σ (T_R^4 - T_H^4) / R_rad
+%   R_rad = (1-ε_R)/(ε_R A_R) + 1/(A_R F_RH) + (1-ε_H)/(ε_H A_H)
+
+R_surf_R = (1 - p.eps_rotor)  / (p.eps_rotor  * p.A_rotor_rad);
+R_space  = 1 / (p.A_rotor_rad * p.F_RH);
+R_surf_H = (1 - p.eps_housing)/ (p.eps_housing* p.A_housing_rad);
+R_rad    = R_surf_R + R_space + R_surf_H;
+
+
+f = @(T) Qgen - p.sigma_SB * (T.^4 - p.T_housing_K^4) / R_rad;
+
+T_guess = 120 + 273.15;   % [K] initial guess
+T_R     = fzero(f, T_guess);
+end
+
+function [eta_cycle, Wg_out, Wg_in, W_loss, W_recharge, SoC_hist] = ...
+    simulate_cycle_efficiency(t, P_grid, SoC0, J_tot, p, T_rated)
+% Simulate storage cycle and compute efficiency including self-discharge
+% and recharge back to initial SoC.
+
+dt = t(2) - t(1);
+Nt = numel(t);
+
+% Energy bounds
+E_max = 0.5 * J_tot * p.omega_max^2;
+E_min = 0.5 * J_tot * p.omega_min^2;
+
+% Initial energy at given SoC0
+E0 = E_min + SoC0 * (E_max - E_min);
+E  = E0;
+
+% Outputs / integrals
+SoC_hist = zeros(Nt,1);
+Wg_out   = 0;
+Wg_in    = 0;
+W_loss   = 0;
+
+for k = 1:Nt
+    % Current SoC and speed
+    SoC = (E - E_min) / (E_max - E_min);
+    SoC = max(0,min(1,SoC));
+    SoC_hist(k) = SoC;
+    
+    omega = soc_to_omega(SoC, p.omega_min, p.omega_max);  % [rad/s]
+    if omega <= 0
+        omega = p.omega_min;   % avoid divide-by-zero
+    end
+    n_rpm = omega * 60/(2*pi);  % not used but handy for debugging
+    
+    % Grid power at this step
+    Pg = P_grid(k);   % [W], + to grid
+    
+    % Torque magnitude required by grid
+    Tg_mag = abs(Pg) / omega;       % [N·m]
+    I_pu   = Tg_mag / T_rated;      % per-unit current magnitude
+    I_pu   = min(max(I_pu,0),1);    % clamp for loss models
+    
+    % EM losses at this speed & current
+    Pr = rotorLosses (p.mag_thick, p.rotor_D, p.rotor_L, I_pu, n_rpm);
+    Ps = statorLosses(p.mag_thick, p.rotor_D, p.rotor_L, I_pu, n_rpm);
+    P_loss = Pr + Ps;
+    
+    % Integrate loss energy
+    W_loss = W_loss + P_loss*dt;
+    
+    % Integrate grid energies
+    if Pg >= 0
+        Wg_out = Wg_out + Pg*dt;
+    else
+        Wg_in  = Wg_in  - Pg*dt;  % Pg negative
+    end
+    
+    % Update stored energy via energy balance:
+    % dE/dt = -P_grid - P_loss
+    E = E - (Pg + P_loss) * dt;
+    
+    % Keep within physical bounds
+    E = max(E_min, min(E_max, E));
+end
+
+E_end = E;
+SoC_end = (E_end - E_min)/(E_max - E_min);
+
+% Recharge energy to return to initial SoC
+if E_end < E0
+    W_recharge = E0 - E_end;
+else
+    W_recharge = 0;
+end
+
+% Overall efficiency
+denom = Wg_in + W_loss + W_recharge;
+eta_cycle = Wg_out / denom;
+end
+
+%% ======================================================================
+%                        PART 2(a): NEW STORAGE CYCLE
+% ======================================================================
+% Design study for team_13_cycle:
+%   - Independent variables: magnet thickness (t_mag) and max speed (n_max)
+%   - For each (t_mag, n_max) we design a new flywheel inertia so that
+%     the usable kinetic energy ΔE = 0.5 J (ω_max^2 - ω_min^2) can cover
+%     the energy swing of the new storage cycle.
+%   - For every design we compute:
+%       * specific power [kW/kg]
+%       * specific energy [Wh/kg]
+%       * storage-cycle efficiency (incl. recharge)
+%       * max rotor temperature (approx., with 20 °C cooling)
+%       * minimum SoC during the cycle
+%       * whether peak power requirement is met
+%   - Plot: all designs (gray) and designs that satisfy all constraints
+%       • P_rated >= peak power demand
+%       • SoC(t) > 0 over full cycle (start at 50 % SoC)
+%       • T_max <= 100 °C
+
+% -------- Team-specific storage cycle (6 hours = 21600 s) --------------
+t_team   = (0:5:21600)';          % [s], 5 s time steps
+P_team   = team_6_cycle(t_team); % [W], + to grid
+P_team_max = max(P_team);         % required peak discharge power
+
+% -------- Required usable energy ΔE for this cycle ---------------------
+E_cum  = cumtrapz(t_team, P_team);       % [J] net energy delivered
+E_span  = max(E_cum) - min(E_cum);        % [J] ideal energy swing
+
+% Increase this until some designs satisfy the SoC constraint..
+safety_factor = 1.5;                      % 1.5x first
+DeltaE_req    = safety_factor * E_span;   % [J] required usable KE
+
+fprintf('\n---- Part 2(a): design study for team_13_cycle ----\n');
+fprintf('Cycle energy span (no losses): %.2f kWh\n', E_span/3.6e6);
+fprintf('Target usable energy (with margin): %.2f kWh\n\n', DeltaE_req/3.6e6);
+
+% ------------------- Design-variable ranges ----------------------------
+tMag_vec = linspace(0.002, 0.010, 15);    % magnet thickness: 2–8 mm
+nMax_vec = linspace(10000, 40000, 15);    % max speed: 20k–40k rpm
+
+nT = numel(tMag_vec);
+nN = numel(nMax_vec);
+
+% Arrays for metrics
+specP_mat = NaN(nT, nN);   % specific power [kW/kg]
+specE_mat = NaN(nT, nN);   % specific energy [Wh/kg]
+eta2_mat  = NaN(nT, nN);   % cycle efficiency (0–1)
+Tmax_mat  = NaN(nT, nN);   % approx. max rotor temperature [°C]
+SoCmin_mat = NaN(nT, nN);  % minimum SoC during cycle
+Pmeet_mat  = false(nT, nN);% power requirement flag
+
+SoC0_new = 0.50;           % start-of-cycle SoC
+Dfw_mat   = NaN(nT, nN);   % flywheel outer diameter [m]
+m_tot_mat = NaN(nT, nN);   % total rotating mass [kg]
+Jtot_mat  = NaN(nT, nN);   % total inertia [kg·m^2]
+nmax_mat  = NaN(nT, nN);   % max speed [rpm]
+tmag_mat  = NaN(nT, nN);   % magnet thickness [m]
+vtip_fw_mat = NaN(nT, nN);   % composite flywheel rim tip speed [m/s]
+vtip_sh_mat = NaN(nT, nN);   % shaft surface tip speed [m/s]
+vtip_pm_mat = NaN(nT, nN);   % PM outer-radius tip speed [m/s]
+
+for iT = 1:nT
+    for iN = 1:nN
+
+        % ================== DESIGN NEW FLYWHEEL ========================
+        p2 = p;                          % start from baseline struct
+        p2.mag_thick = tMag_vec(iT);     % new magnet thickness
+        p2.rotor_D   = p2.shaft_D + 2*p2.mag_thick;
+        p2.rotor_R   = p2.rotor_D/2;
+
+        p2.n_max     = nMax_vec(iN);     % new maximum speed
+        p2.omega_max = 2*pi*p2.n_max/60;
+        p2.omega_min = p2.omega_max/2;
+
+        % ---- Required inertia for this n_max to supply ΔE_req --------
+        DeltaOmega2 = p2.omega_max^2 - p2.omega_min^2;
+        if DeltaOmega2 <= 0
+            continue;
+        end
+        J_req = 2*DeltaE_req / DeltaOmega2;   % [kg·m^2] rotating-group inertia
+
+        % ---- PM rotor inertia for this t_mag (solid cylinder) --------
+        R_pm2  = p2.rotor_D/2;
+        L_pm2  = p2.rotor_L;
+        V_pm2  = pi*R_pm2^2 * L_pm2;
+        m_pm2  = rho_PM * V_pm2;
+        J_pm2  = 0.5 * m_pm2 * R_pm2^2;
+
+        % ---- Composite flywheel inertia needed -----------------------
+        J_f_req = max(J_req - J_pm2, 0);  % [kg·m^2] from composite only
+
+        % Inner radius of flywheel = rotor radius
+        R_i2 = p2.rotor_D/2;
+        L_f2 = p2.flywheel_L;
+
+        % Solve for outer radius from thick-walled cylinder formula:
+        %   J_f = 0.5 * rho_comp * pi * L_f * (R_o^4 - R_i^4)
+        R_o4 = (2*J_f_req)/(rho_comp*pi*L_f2) + R_i2^4;
+        R_o2 = R_o4^(1/4);        % OK even if J_f_req = 0
+        p2.flywheel_D = 2*R_o2;
+
+        % ---- Recompute flywheel mass & inertia with new R_o ----------
+        V_f2 = pi*(R_o2^2 - R_i2^2)*L_f2;
+        m_f2 = rho_comp * max(V_f2,0);           % guard tiny negatives
+        J_f2 = 0.5 * m_f2 * (R_i2^2 + R_o2^2);
+
+        m_tot2 = m_f2 + m_pm2;
+        J_tot2 = J_f2 + J_pm2;
+
+        Dfw_mat(iT,iN)   = p2.flywheel_D;
+        m_tot_mat(iT,iN) = m_tot2;
+        Jtot_mat(iT,iN)  = J_tot2;
+        nmax_mat(iT,iN)  = p2.n_max;
+        tmag_mat(iT,iN)  = p2.mag_thick;
+
+        % ================== TIP-SPEED DIAGNOSTICS =======================
+        omega_max2 = p2.omega_max;                % [rad/s]
+
+        % Composite rim (flywheel OD)
+        vtip_fw = omega_max2 * R_o2;              % [m/s]
+        % Steel shaft surface
+        R_sh2   = p2.shaft_D/2;
+        vtip_sh = omega_max2 * R_sh2;             % [m/s]
+        % PM outer radius (shaft + magnet thickness)
+        R_pm_outer2 = R_sh2 + p2.mag_thick;
+        vtip_pm = omega_max2 * R_pm_outer2;       % [m/s]
+
+        vtip_fw_mat(iT,iN) = vtip_fw;
+        vtip_sh_mat(iT,iN) = vtip_sh;
+        vtip_pm_mat(iT,iN) = vtip_pm;
+
+        if iT == 1 && iN == 1
+            fprintf('Example tip speeds (design 1,1): v_fw = %.1f m/s, v_sh = %.1f m/s, v_pm = %.1f m/s\n', ...
+                    vtip_fw, vtip_sh, vtip_pm);
+        end
+        % ================== UPDATE RADIATION GEOMETRY ==================
+        % Rotor & housing areas follow same formulas as Part 1, but with
+        % the updated flywheel diameter.
+        R_f2        = p2.flywheel_D/2;
+        L_shaft_exp = p2.shaft_L_top + p2.shaft_L_bot;
+
+        % Rotor radiating area (flywheel barrel + faces + shaft)
+        A_fw_side2  = pi * p2.flywheel_D * L_f2;
+        A_fw_faces2 = 2 * pi * R_f2^2;
+        A_shaft2    = pi * p2.shaft_D * L_shaft_exp;
+        p2.A_rotor_rad = A_fw_side2 + A_fw_faces2 + A_shaft2;
+
+        % Housing area (same gaps as baseline)
+        R_h_fw2 = R_f2 + p2.gap_flywheel;
+        D_h_fw2 = 2 * R_h_fw2;
+        A_H_fw2 = pi * D_h_fw2 * L_f2;
+
+        R_s2    = p2.shaft_D/2;
+        R_h_sh2 = R_s2 + p2.gap_shaft;
+        D_h_sh2 = 2 * R_h_sh2;
+        A_H_sh2 = pi * D_h_sh2 * L_shaft_exp;
+
+        R_h_end2 = R_h_fw2;
+        A_H_end2 = 2 * pi * R_h_end2^2;
+
+        p2.A_housing_rad = A_H_fw2 + A_H_sh2 + A_H_end2;
+
+        % ================== ELECTROMAGNETIC SIZING =====================
+        % Rated torque & power for this design
+        tau_rated2 = magneticShear(p2.mag_thick, 1.0);   % shear at I_pu = 1
+        A_shear2   = pi * p2.rotor_D * p2.rotor_L;
+        T_rated2   = tau_rated2 * A_shear2 * p2.rotor_R;
+        P_rated2   = p2.omega_max * T_rated2;            % [W]
+        Pmeet_mat(iT,iN) = (P_rated2 >= P_team_max);
+
+        % ================== TEMPERATURE ESTIMATE =======================
+        % Approximate worst-case rotor temperature at rated point:
+        n_rpm_rated = p2.n_max;
+        I_pu_rated  = 1.0;
+        Pr_rated = rotorLosses(p2.mag_thick, p2.rotor_D, p2.rotor_L, ...
+                               I_pu_rated, n_rpm_rated);
+        Q_gen   = Pr_rated;                        % [W]
+        Trot_K  = solveRotorTemperature_full(Q_gen, p2);
+        Trot_C  = Trot_K - 273.15;          
+        Tmax_mat(iT,iN) = Trot_C;
+
+        % ================== CYCLE SIMULATION ===========================
+        [eta2, Wg_out2, Wg_in2, W_loss2, W_recharge2, SoC_hist2] = ...
+            simulate_cycle_efficiency(t_team, P_team, SoC0_new, ...
+                                      J_tot2, p2, T_rated2);
+
+        eta2_mat(iT,iN)  = eta2;
+        SoCmin_mat(iT,iN) = min(SoC_hist2);
+
+        % ================== SPECIFIC METRICS ===========================
+        % Specific power (based on rated power)
+        specP_mat(iT,iN) = (P_rated2/1e3) / m_tot2;      % [kW/kg]
+
+        % Specific energy from designed speed range
+        E_max2  = 0.5 * J_tot2 * p2.omega_max^2;
+        E_min2  = 0.5 * J_tot2 * p2.omega_min^2;
+        DeltaE2 = E_max2 - E_min2;
+        specE_mat(iT,iN) = DeltaE2 / (m_tot2*3600);      % [Wh/kg]
+    end
+end
+
+% ================== IDENTIFY FULLY VIABLE DESIGNS ======================
+valid_all = Pmeet_mat & (SoCmin_mat > 0) & (Tmax_mat <= 100);
+
+E_all   = specE_mat(:);
+P_all   = specP_mat(:);
+eta_all = 100*eta2_mat(:);   % convert to %
+
+E_ok    = specE_mat(valid_all);
+P_ok    = specP_mat(valid_all);
+eta_ok  = 100*eta2_mat(valid_all);
+
+% ----------------- Trade-off visualization for Part 2(a) ---------------
+figure; hold on; grid on; box on;
+
+% 1) Plot all designs in light gray (for context)
+scatter3(E_all, P_all, eta_all, 40, [0.7 0.7 0.7], 'filled');
+
+% 2) Overplot designs that satisfy all constraints, colored by efficiency
+if ~isempty(E_ok)
+    scatter3(E_ok, P_ok, eta_ok, 60, eta_ok, 'filled');
+    cb = colorbar;
+    ylabel(cb,'Storage-cycle efficiency [%]');
+else
+    % If nothing satisfies all constraints, at least label the gray cloud.
+    cb = colorbar;
+    ylabel(cb,'Storage-cycle efficiency of all designs [%]');
+end
+
+xlabel('Specific energy [Wh/kg]');
+ylabel('Specific power [kW/kg]');
+zlabel('Storage-cycle efficiency [%]');
+title('Design Space for New Flywheel');
+view(135,25);
+
+%% ================== CLEAN FINAL OUTPUT TABLES ============================
+[idxT, idxN] = find(valid_all);
+nValid = numel(idxT);
+
+fprintf('\n=============================================================\n');
+fprintf('                 VALID DESIGN SUMMARY\n');
+fprintf('=============================================================\n');
+
+% ---------------- Table 1: Geometric / Physical Parameters ----------------
+fprintf('\nTABLE 1: DESIGN GEOMETRY & MASS\n');
+fprintf(' # | t_mag [mm] | n_max [rpm] | D_fw [m] | m_tot [kg] | J_tot [kg·m²]\n');
+fprintf('-----------------------------------------------------------------------\n');
+
+for k = 1:nValid
+    iT = idxT(k);
+    iN = idxN(k);
+
+    fprintf('%2d | %9.3f | %11.0f | %7.3f | %10.2f | %12.3e\n', ...
+        k, ...
+        1e3 * tmag_mat(iT,iN), ...
+        nmax_mat(iT,iN), ...
+        Dfw_mat(iT,iN), ...
+        m_tot_mat(iT,iN), ...
+        Jtot_mat(iT,iN));
+end
+
+
+% ---------------- Table 2: Performance Metrics ----------------------------
+fprintf('\nTABLE 2: PERFORMANCE METRICS\n');
+fprintf(' # | E_spec [Wh/kg] | P_spec [kW/kg] | eta_cycle [%%] | T_max [C] | SoC_min\n');
+fprintf('--------------------------------------------------------------------------\n');
+
+for k = 1:nValid
+    iT = idxT(k);
+    iN = idxN(k);
+
+    fprintf('%2d | %14.2f | %14.3f | %13.3f | %9.3f | %7.3f\n', ...
+        k, ...
+        specE_mat(iT,iN), ...
+        specP_mat(iT,iN), ...
+        100*eta2_mat(iT,iN), ...
+        Tmax_mat(iT,iN), ...
+        SoCmin_mat(iT,iN));
+end
+
+fprintf('--------------------------------------------------------------------------\n\n');
+
+%% ======================================================================
+%                       PART 2(b): PROPOSED DESIGN
+% =======================================================================
+fprintf('---- Part 2(b): proposed flywheel design ----\n');
+
+if nValid == 0
+    fprintf('No designs satisfy all constraints – cannot select a proposed design.\n\n');
+else
+    % Goal is to choose the design with the highest specific energy among
+    % all valid designs. 
+    % 1) Pick the index of the best design among valid ones
+    [~, idx_best_local] = max(E_ok);      % highest specific energy
+    iT_best = idxT(idx_best_local);       % row index into matrices
+    iN_best = idxN(idx_best_local);       % column index
+
+    % 2) Extract key metrics from design matrices
+    mag_best      = tmag_mat(iT_best, iN_best);    % [m]
+    nmax_best     = nmax_mat(iT_best, iN_best);    % [rpm]
+    Dfw_best      = Dfw_mat(iT_best, iN_best);     % [m] flywheel OD
+    m_tot_best    = m_tot_mat(iT_best, iN_best);   % [kg]
+    J_tot_best    = Jtot_mat(iT_best, iN_best);    % [kg·m^2]
+    specE_best    = specE_mat(iT_best, iN_best);   % [Wh/kg]
+    specP_best    = specP_mat(iT_best, iN_best);   % [kW/kg]
+    eta_best      = eta2_mat(iT_best, iN_best);    % [–]
+    Tmax_best     = Tmax_mat(iT_best, iN_best);    % [°C]
+    SoCmin_best   = SoCmin_mat(iT_best, iN_best);  % [–]
+
+    % 3) Reconstruct Geometric quantities using baseline struct p
+    rotorD_best   = p.shaft_D + 2*mag_best;    % [m] rotor + magnets
+    flywheelID_best = rotorD_best;             % [m] inner diameter = rotor_D
+    flywheelL_best  = p.flywheel_L;            % [m] (kept same as baseline)
+    motorL_best     = p.motor_L;               % [m]
+    shaftD_best     = p.shaft_D;               % [m]
+
+    % 4) Prints summary for proposed optimal design
+    fprintf('Selected design indices (tMag index, nMax index): (%d, %d)\n', ...
+            iT_best, iN_best);
+    fprintf('--- Geometry & ratings (proposed) ---\n');
+    fprintf('Magnet thickness           : %.3f mm\n', 1e3*mag_best);
+    fprintf('Maximum speed              : %.0f rpm\n', nmax_best);
+    fprintf('Flywheel OD                : %.3f m\n', Dfw_best);
+    fprintf('Flywheel ID                : %.3f m\n', flywheelID_best);
+    fprintf('Flywheel length            : %.3f m\n', flywheelL_best);
+    fprintf('Rotor diameter             : %.3f m\n', rotorD_best);
+    fprintf('Motor length               : %.3f m\n', motorL_best);
+    fprintf('Shaft diameter             : %.3f m\n', shaftD_best);
+    fprintf('Total rotating mass        : %.2f kg\n', m_tot_best);
+    fprintf('Total inertia J            : %.3e kg·m^2\n', J_tot_best);
+    % --- Tip speeds for proposed design ---
+    omega_max_best = 2*pi*nmax_best/60;         % [rad/s]
+    R_fw_best      = Dfw_best/2;                % flywheel rim radius [m]
+    R_sh_best      = shaftD_best/2;             % shaft radius [m]
+    R_pm_outer_best = R_sh_best + mag_best;     % PM outer radius [m]
+
+    vtip_fw_best = omega_max_best * R_fw_best;       % [m/s]
+    vtip_sh_best = omega_max_best * R_sh_best;       % [m/s]
+    vtip_pm_best = omega_max_best * R_pm_outer_best; % [m/s]
+
+    fprintf('\n--- Tip-speed diagnostics (proposed) ---\n');
+    fprintf('Flywheel rim tip speed     : %.1f m/s\n', vtip_fw_best);
+    fprintf('Shaft surface tip speed    : %.1f m/s\n', vtip_sh_best);
+    fprintf('PM outer-radius tip speed  : %.1f m/s\n', vtip_pm_best);
+
+    fprintf('\n--- Performance (proposed, team_13_cycle) ---\n');
+    fprintf('Specific energy (usable)   : %.1f Wh/kg\n',  specE_best);
+    fprintf('Specific power (rated)     : %.3f kW/kg\n',  specP_best);
+    fprintf('Cycle efficiency           : %.2f %%\n',     100*eta_best);
+    fprintf('Minimum SoC during cycle   : %.1f %%\n',     100*SoCmin_best);
+    fprintf('Max rotor temperature      : %.1f °C\n',     Tmax_best);
+
+    % 5) Compare to baseline metrics, if they are still in the workspace
+    if exist('P_spec_kWkg','var') && exist('E_spec_Whkg','var') && exist('eta_cycle','var')
+        fprintf('\n--- Comparison vs baseline design ---\n');
+        fprintf('Baseline specific energy   : %.1f Wh/kg\n',  E_spec_Whkg);
+        fprintf('Proposed specific energy   : %.1f Wh/kg\n',  specE_best);
+        fprintf('Baseline specific power    : %.3f kW/kg\n',  P_spec_kWkg);
+        fprintf('Proposed specific power    : %.3f kW/kg\n',  specP_best);
+        fprintf('Baseline cycle efficiency  : %.2f %%\n',     100*eta_cycle);
+        fprintf('Proposed cycle efficiency  : %.2f %%\n',     100*eta_best);
+    end
+
+    fprintf('\nPart 2(b) proposed design selection complete.\n\n');
+end
+
+

@@ -1,0 +1,136 @@
+function p = params()
+% PARAMS  Baseline parameter set for the flywheel energy storage project.
+%
+% Returns a struct 'p' containing:
+%   - descriptive field names
+%   - short alias names for convenience in code
+%
+% Baseline values are taken from:
+%   - Project 3 spec (Table 1: material props, limits, clearances)
+%   - Appendix A baseline dimensions (Table A.1)
+%
+% Any quantities that are not explicitly given in the spec are marked
+% as ASSUMED in the comments.
+
+%% -----------------------------
+%  GEOMETRY: ROTOR + SHAFT + MAGNETS
+%  (Baseline design from Appendix A)
+%  ------------------------------
+
+% Flywheel (composite rim) geometry  (GIVEN: Table A.1)
+p.flywheel_outer_diameter_m      = 0.430;   % [m] flywheel diameter
+p.flywheel_axial_length_m        = 1.000;   % [m] flywheel axial length
+
+% Shaft + PM hub geometry  (GIVEN: Table A.1 "Shaft and PM diameter")
+p.shaft_pm_diameter_m            = 0.084;   % [m] shaft + PM diameter
+
+% Magnet geometry (baseline)  (GIVEN: Table A.1 "Magnet thickness")
+p.magnet_thickness_m             = 0.006;   % [m] magnet radial thickness (6 mm)
+
+% NOTE: Flywheel inner diameter will be taken as shaft/PM diameter.
+%       Any extra hub/clearance modeling is handled in compute_geometry.
+
+%% -----------------------------
+%  CLEARANCES (GIVEN: Table 1)
+%  -----------------------------
+p.axial_clearance_between_components_m    = 0.020; % [m] 20 mm
+p.radial_clearance_flywheel_housing_m     = 0.020; % [m] 20 mm
+p.clearance_nonflywheel_housing_m         = 0.001; % [m] 1 mm
+
+%% -----------------------------
+%  OPERATING SPEED / SOC
+%  ------------------------------
+
+% Maximum rotational speed (GIVEN: Table A.1)
+p.max_rotational_speed_rpm       = 40000;                   % [rpm]
+p.max_rotational_speed_rad_per_s = p.max_rotational_speed_rpm * 2*pi/60;  % [rad/s]
+
+% State-of-charge mapping (GIVEN in spec):
+%   SoC = 0% at 0.5 * omega_max
+%   SoC = 100% at omega_max
+p.min_state_of_charge_frac       = 0.0;    % SoC lower bound (consistent with def.)
+
+% Initial SoC (ASSUMED: scenario choice, not given)
+p.initial_state_of_charge_frac   = 0.50;   % starting SoC for storage cycles
+
+%% -----------------------------
+%  MATERIAL PROPERTIES (GIVEN: Table 1)
+%  -----------------------------
+p.composite_density_kg_per_m3    = 1600;   % [kg/m^3] composite flywheel
+p.steel_density_kg_per_m3        = 7850;   % [kg/m^3] steel
+p.pm_density_kg_per_m3           = 7850;   % [kg/m^3] permanent magnets
+
+%% -----------------------------
+%  THERMAL PROPERTIES
+%  -----------------------------
+
+% Housing / ambient temperature (GIVEN: Table A.1 "Housing temperature")
+p.ambient_temperature_K          = 30 + 273.15;   % [K]
+
+% Max rotating group temperature (GIVEN: Table 1)
+p.rotor_max_temperature_K        = 100 + 273.15;  % [K]
+
+% Emissivities (GIVEN: Table 1)
+p.rotor_emissivity               = 0.4;   % [-] rotor
+p.housing_emissivity             = 0.9;   % [-] housing
+
+%% -----------------------------
+%  SAFETY / CONSTRAINT LIMITS (GIVEN: Table 1)
+%  -----------------------------
+p.tip_speed_limit_composite_m_per_s = 900;  % [m/s] composite flywheel
+p.tip_speed_limit_steel_m_per_s     = 175;  % [m/s] steel shaft
+p.tip_speed_limit_pm_m_per_s        = 175;  % [m/s] PM tip
+
+% Magnet thickness constraint (GIVEN: Table 1)
+p.magnet_thickness_min_m            = 0.002;  % [m] 2 mm minimum
+
+%% -----------------------------
+%  AMB / BEARING PARAMETERS
+%  -----------------------------
+
+% AMB rated force (GIVEN: Table A.1)
+p.amb_rated_force_N              = 5780;   % [N]
+
+
+% Detailed AMB parameters come from ambParameters:
+%   ambParameters(rotor_diameter, amb_rated_force_N)
+
+%% -----------------------------
+%  SHORT ALIASES (for convenience in other functions)
+%  -----------------------------
+
+% Geometry aliases
+p.D_out     = p.flywheel_outer_diameter_m;
+p.L_fw      = p.flywheel_axial_length_m;
+p.D_shaft   = p.shaft_pm_diameter_m;
+p.tMag      = p.magnet_thickness_m;
+
+% Clearances aliases
+p.axial_clearance_m        = p.axial_clearance_between_components_m;
+p.radial_clearance_fw_m    = p.radial_clearance_flywheel_housing_m;
+p.clearance_nonfw_housing_m= p.clearance_nonflywheel_housing_m;
+
+% Speed aliases
+p.omega_max = p.max_rotational_speed_rad_per_s;
+p.rpm_max   = p.max_rotational_speed_rpm;
+
+% Material aliases
+p.rho_comp  = p.composite_density_kg_per_m3;
+p.rho_steel = p.steel_density_kg_per_m3;
+p.rho_mag   = p.pm_density_kg_per_m3;
+
+% Thermal aliases
+p.Tamb      = p.ambient_temperature_K;
+p.T_max     = p.rotor_max_temperature_K;
+p.eps_rotor = p.rotor_emissivity;
+p.eps_housing = p.housing_emissivity;
+
+% Limits aliases
+p.vtip_comp_max  = p.tip_speed_limit_composite_m_per_s;
+p.vtip_steel_max = p.tip_speed_limit_steel_m_per_s;
+p.vtip_pm_max    = p.tip_speed_limit_pm_m_per_s;
+
+% AMB aliases
+p.AMB_rated_force = p.amb_rated_force_N;
+
+end

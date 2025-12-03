@@ -1,0 +1,108 @@
+function result = simulate_cycle(p, geom, t, P_cmd)
+%SIMULATE_CYCLE  Simulate flywheel speed, SoC, losses, and temperature over a cycle.
+%
+%   result = simulate_cycle(p, geom, t, P_cmd)
+%
+% Same inputs/outputs as before, but now:
+%   - Enforces torque/power limit: |T_elec| <= T_rated, |P_mech| <= T_rated*omega
+%   - Uses the *limited* mechanical power P_mech in the energy balance.
+
+    if numel(t) ~= numel(P_cmd)
+        error('simulate_cycle:SizeMismatch', ...
+              't and P_cmd must have the same length.');
+    end
+
+    t     = t(:);
+    P_cmd = P_cmd(:);
+    N     = numel(t);
+
+    J = geom.J_total;
+
+
+    % Rated torque from shear at I_pu = 1
+    T_rated = calcRatedTorque(p, geom);   % [N·m]
+
+    % Preallocate
+    omega     = zeros(N,1);
+    soc       = zeros(N,1);
+    P_rotor   = zeros(N,1);
+    P_stator  = zeros(N,1);
+    P_total   = zeros(N,1);
+    T_rot     = zeros(N,1);
+    I_pu_hist = zeros(N,1);
+    P_mech    = zeros(N,1);   % actual mech power to/from rotor (after saturation)
+
+    % Initial condition from SoC
+    soc0   = p.initial_state_of_charge_frac;
+    omega0 = compute_soc('soc2omega', soc0, p, geom);
+    omega(1) = omega0;
+    soc(1)   = soc0;
+
+    % Time stepping
+    for k = 1:N-1
+        dt_k    = t(k+1) - t(k);
+        omega_k = max(omega(k), 1e-3);   % avoid divide-by-zero
+        Pk      = P_cmd(k);
+
+        % Max power the machine can exchange at this speed
+        P_max = T_rated * omega_k;       % [W]
+
+        % Actual mechanical power to/from rotor, limited by torque
+        %   P_mech > 0: rotor → grid (discharge)
+        %   P_mech < 0: grid → rotor (charge)
+        P_mech_k = max(min(Pk, P_max), -P_max);
+        P_mech(k) = P_mech_k;
+
+        % Electrical torque corresponding to P_mech (used for current)
+        T_elec = -P_mech_k / omega_k;          % [N·m]
+        I_pu   = min(abs(T_elec) / T_rated, 1);
+        I_pu_hist(k) = I_pu;
+
+        % Losses (rotor + stator) based on I_pu and omega
+        [P_tot_k, P_rot_k, P_stat_k, ~, ~] = ...
+            compute_losses(p, geom, I_pu, omega_k);
+
+        P_rotor(k)  = P_rot_k;
+        P_stator(k) = P_stat_k;
+        P_total(k)  = P_tot_k;
+
+        % Rotor temperature from rotor losses only
+        T_rot(k) = compute_temperature(p, geom, P_rot_k);
+
+        % Rotor dynamics:
+        %   J*ω*dω/dt = -P_mech - P_losses
+        %
+        % P_mech is power exchanged with the grid (limited by torque).
+        % P_rot_k and P_stat_k drain energy as heat.
+        domega_dt  = (-P_mech_k - P_stat_k - P_rot_k) / (J * omega_k);
+        omega_next = omega_k + domega_dt * dt_k;
+        omega_next = max(0, omega_next);
+
+        omega(k+1) = omega_next;
+        soc_raw    = compute_soc('omega2soc', omega_next, p, geom);
+        soc(k+1)   = max(0, min(1, soc_raw));
+    end
+
+    % Last point: hold last computed losses/temp/current/mech power
+    if N > 1
+        P_rotor(end)   = P_rotor(end-1);
+        P_stator(end)  = P_stator(end-1);
+        P_total(end)   = P_total(end-1);
+        T_rot(end)     = T_rot(end-1);
+        I_pu_hist(end) = I_pu_hist(end-1);
+        P_mech(end)    = P_mech(end-1);
+    end
+
+    % Pack results
+    result.t        = t;
+    result.P_cmd    = P_cmd;      % commanded power
+    result.P_mech   = P_mech;     % actual power to/from rotor
+    result.omega    = omega;
+    result.soc      = soc;
+    result.P_rotor  = P_rotor;
+    result.P_stator = P_stator;
+    result.P_total  = P_total;
+    result.T_rotor  = T_rot;
+    result.I_pu     = I_pu_hist;
+    result.T_rated  = T_rated;
+end
